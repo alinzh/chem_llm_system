@@ -149,8 +149,9 @@ graph.set_entry_point("decomposer")  # Starting node
 # Compile the graph
 app = graph.compile()
 
-# == EXECUTION ==
-user_input = {"query": "Find the weather in Moscow and calculate 2+2"}
-result = app.invoke(user_input)
+if __name__ == "__main__":
+    # == EXECUTION ==
+    user_input = {"query": "Find the weather in Moscow and calculate 2+2"}
+    result = app.invoke(user_input)
 
-print(result)
+    print(result)
