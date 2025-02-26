@@ -17,6 +17,31 @@ class AgentsSystem:
             self.app = self._build_graph()
             self.message_history = []
             self.count_messages = {"before_last": 0, "last": 0}
+            
+    def _build_graph(self):
+        # define agents graph
+        graph = Graph()
+
+        graph.add_node("decomposer", self.decomposer)
+        graph.add_node("orchestrator", self.orchestrator)
+        graph.add_node("automl", self.automl_agent)
+        graph.add_node("chat_agent", self.chat_agent)
+        graph.add_node("validator", self.validator)
+        graph.add_node("summarizer", self.summarizer)
+
+        graph.add_edge("decomposer", "orchestrator")
+        graph.add_conditional_edges("orchestrator", self.routing_function_orchestr)
+
+        graph.add_edge("automl", "orchestrator")
+        graph.add_edge("chat_agent", "orchestrator")
+
+        graph.add_conditional_edges("validator", self.routing_function_validator)
+
+        graph.add_edge("summarizer", END)
+        graph.set_entry_point("decomposer")
+
+        app = graph.compile()
+        return app
 
     def routing_function_orchestr(self, state):
         if state["done"] == "validate":
@@ -37,11 +62,8 @@ class AgentsSystem:
             return "orchestrator"
 
     def limit_message_history(self):
-        """Ensure that message history only stores the last 2 requests."""
-        if [i["role"] for i in self.message_history].count("user") > 2:
-            self.message_history.pop(0)  # remove the oldest item
-            while [i["role"] for i in self.message_history][0] != "user":
-                self.message_history.pop(0)
+        """Ensure that message history only stores the last users request."""
+        self.message_history = self.message_history[self.count_messages['before_last']:]
 
     def decomposer(self, state):
         user_query = state["query"]
@@ -87,12 +109,14 @@ class AgentsSystem:
         query = state["query"]
         result = f"Automl not worked. Write to autor"
         self.message_history.append({"role": "assistant", "content": result})
+        self.count_messages['last'] += 1
         return state
 
     def chat_agent(self, state):
         query = state["query"]
         result = f"Chat Agent not worked. Write to autor"
         self.message_history.append({"role": "assistant", "content": result})
+        self.count_messages['last'] += 1
         return state
 
     def orchestrator(self, state):
@@ -108,15 +132,17 @@ class AgentsSystem:
         Determine which tools to use to complete the following task.
         Return the JSON in the following format: {{"tools": [{{"tool": "tool_name", "arguments": {{"query": "value"}}}}]}}.
         Available tools:
-        - "gen_model": runs a generative model inference.
-        - "pred_model": runs a predictive model inference.
-        - "database": queries the database.
-        - "automl": calls the AutoML agent.
-        - "chat_agent": queries the chat agent.
+        - "gen_model": runs a generative model inference. Args: query
+        - "pred_model": runs a predictive model inference. Args: query
+        - "database": queries the database. Args: query
+        - "automl": calls the AutoML agent. Args: query
+        - "chat_agent": queries the chat agent. Args: query
         
         Your response must contain only json! No extra characters!
         """
         self.message_history.append({"role": "user", "content": task})
+        self.count_messages['last'] += 1
+        
         messages = [
             {"role": "system", "content": tool_selection_prompt}
         ] + self.message_history
@@ -129,11 +155,11 @@ class AgentsSystem:
             extra_headers={"X-Title": "DrugDesign"},
         )
 
-        # tool_data = json.loads(response.choices[0].message.content)
         tool_data = eval(response.choices[0].message.content)
         tools_to_use = tool_data.get("tools", [])
         self.message_history.append({"role": "assistant", "content": str(tool_data)})
-
+        self.count_messages['last'] += 1
+        
         next_nodes = []
         for tool_info in tools_to_use:
             tool_name = tool_info.get("tool")
@@ -149,6 +175,7 @@ class AgentsSystem:
                 result = tool_funcs[tool_name](**tool_args)
                 responses.append(result)
                 self.message_history.append({"role": "assistant", "content": result})
+                self.count_messages['last'] += 1
 
             elif tool_name in ["automl", "chat_agent"]:
                 # add info about launch next agent
@@ -168,8 +195,8 @@ class AgentsSystem:
             }
 
     def validator(self, state):
-        responses = state["responses"]
-        prompt = f'Validate the following responses:\n{responses}\nReturn JSON in the format: {{"valid": true or false, "reason": "explanation"}}'
+        # responses = state["responses"]
+        # prompt = f'Validate the following responses:\n{responses}\nReturn JSON in the format: {{"valid": true or false, "reason": "explanation"}}'
 
         # response = self.client.chat.completions.create(
         #     model="meta-llama/llama-3.1-70b-instruct",
@@ -207,36 +234,32 @@ class AgentsSystem:
             response = responses[0]
 
         return {"summary": response}
+    
+    def run(self, user_input) -> str:
+        self.limit_message_history()
+        self.count_messages['before_last'] = self.count_messages['last']
+        self.count_messages['last'] = 0
+        result = self.app.invoke(user_input)['summary']
+        return result
 
-    def _build_graph(self):
-        # define agents graph
-        graph = Graph()
-
-        graph.add_node("decomposer", self.decomposer)
-        graph.add_node("orchestrator", self.orchestrator)
-        graph.add_node("automl", self.automl_agent)
-        graph.add_node("chat_agent", self.chat_agent)
-        graph.add_node("validator", self.validator)
-        graph.add_node("summarizer", self.summarizer)
-
-        graph.add_edge("decomposer", "orchestrator")
-        graph.add_conditional_edges("orchestrator", self.routing_function_orchestr)
-
-        graph.add_edge("automl", "orchestrator")
-        graph.add_edge("chat_agent", "orchestrator")
-
-        graph.add_conditional_edges("validator", self.routing_function_validator)
-
-        graph.add_edge("summarizer", END)
-        graph.set_entry_point("decomposer")
-
-        app = graph.compile()
-        return app
-
-
+        
 if __name__ == "__main__":
+    system = AgentsSystem()
     user_input = {
-        "query": "Train genrative models for molecules with hight IC50. Train GAN for generation dtug-molecules"
+        "query": "Train genrative model. Train GAN for generation dtug-molecules"
     }
-    result = AgentsSystem().app.invoke(user_input)
-    print(result)
+    user_input2 = {
+        "query": "Predict IC50 for last generated mols."
+    }
+    user_input3 = {
+        "query": "Train GAN for molecules with low LogP."
+    }
+    res1 = system.run(user_input)
+    print(res1)
+    
+    res2 = system.run(user_input2)
+    print(res2)
+    
+    res3 = system.run(user_input3)
+    print(res3)
+
